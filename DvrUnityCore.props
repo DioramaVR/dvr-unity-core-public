@@ -1,0 +1,92 @@
+<Project>
+  <!--
+    Diorama VR (DVR) Unity core: shared source, compiled into each mod's own DLL.
+
+    Import it in the mod's csproj AFTER the PropertyGroup that sets these two:
+
+      <DvrRuntime>Mono</DvrRuntime>        Mono (BepInEx 5) or IL2CPP (BepInEx 6)
+      <DvrPipeline>BuiltIn</DvrPipeline>   BuiltIn or URP
+
+      <Import Project="$(DvrCoreDir)DvrUnityCore.props" />
+
+    with DvrCoreDir set in the mod's Directory.Build.props (default:
+    core\dvr-unity-core, two folders up from the mod's repo). The mod keeps its own
+    references (Unity, BepInEx, TextMeshPro, and for URP the two
+    Unity.RenderPipelines runtime DLLs); the core adds only source files and
+    defines DVR_MONO or DVR_IL2CPP, and DVR_BUILTIN or DVR_URP.
+
+    Optional:
+      <DvrNoBepInEx>true</DvrNoBepInEx> no BepInEx: the core brings the logging and config types it uses (timberborn)
+      <DvrEntityId>true</DvrEntityId>   Unity 6.5+: object keys from GetEntityId (GetInstanceID is an error there)
+      <DvrCoreOpenVR>false</DvrCoreOpenVR>  the mod keeps its own openvr_api.cs
+  -->
+  <PropertyGroup>
+    <DvrCoreSrc>$(MSBuildThisFileDirectory)src\</DvrCoreSrc>
+    <!-- The core's version (VERSION, tagged vX.Y.Z), compiled in as VrCore.Version.
+         A mod says which it is built and tested with in its Directory.Build.props:
+           <DvrCoreVersion>0.1.0</DvrCoreVersion>
+         and the build stops if this checkout is another version. -->
+    <DvrCoreActualVersion Condition="Exists('$(MSBuildThisFileDirectory)VERSION')">$([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)VERSION').Trim())</DvrCoreActualVersion>
+    <DvrCoreActualVersion Condition="'$(DvrCoreActualVersion)' == ''">unknown</DvrCoreActualVersion>
+    <DvrCoreOpenVR Condition="'$(DvrCoreOpenVR)' == ''">true</DvrCoreOpenVR>
+    <DefineConstants Condition="'$(DvrRuntime)' == 'Mono'">$(DefineConstants);DVR_MONO</DefineConstants>
+    <DefineConstants Condition="'$(DvrRuntime)' == 'IL2CPP'">$(DefineConstants);DVR_IL2CPP</DefineConstants>
+    <DefineConstants Condition="'$(DvrPipeline)' == 'BuiltIn'">$(DefineConstants);DVR_BUILTIN</DefineConstants>
+    <DefineConstants Condition="'$(DvrPipeline)' == 'URP'">$(DefineConstants);DVR_URP</DefineConstants>
+    <DefineConstants Condition="'$(DvrEntityId)' == 'true'">$(DefineConstants);DVR_ENTITYID</DefineConstants>
+    <DefineConstants Condition="'$(DvrNoBepInEx)' == 'true'">$(DefineConstants);DVR_NO_BEPINEX</DefineConstants>
+    <!-- The core's net472 polyfills sit in namespace System (see Compat.Net472.cs); a game whose mscorlib has one too gets a harmless CS0436. -->
+    <NoWarn>$(NoWarn);CS0436</NoWarn>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- Release builds carry no debug info: with a PDB, .NET writes the PDB's full
+         path (the build machine's home folder) into the DLL. Debug builds keep it. -->
+    <DebugType Condition="'$(Configuration)' == 'Release'">none</DebugType>
+    <DebugSymbols Condition="'$(Configuration)' == 'Release'">false</DebugSymbols>
+    <LangVersion Condition="'$(LangVersion)' == ''">latest</LangVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="$(DvrCoreSrc)**\*.cs"
+             Exclude="$(DvrCoreSrc)Pipeline\BuiltIn\**;$(DvrCoreSrc)Pipeline\Urp\**;$(DvrCoreSrc)OpenVR\**"
+             Link="DvrCore\%(RecursiveDir)%(Filename)%(Extension)" />
+    <Compile Include="$(DvrCoreSrc)Pipeline\BuiltIn\*.cs" Condition="'$(DvrPipeline)' == 'BuiltIn'"
+             Link="DvrCore\Pipeline\BuiltIn\%(Filename)%(Extension)" />
+    <Compile Include="$(DvrCoreSrc)Pipeline\Urp\*.cs" Condition="'$(DvrPipeline)' == 'URP'"
+             Link="DvrCore\Pipeline\Urp\%(Filename)%(Extension)" />
+    <Compile Include="$(DvrCoreSrc)OpenVR\*.cs" Condition="'$(DvrCoreOpenVR)' == 'true'"
+             Link="DvrCore\OpenVR\%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <!-- The menu's fonts and icons, copied next to the mod's DLL (fonts\, icons\): the
+       core finds them there by itself (VrUiMenu.UseOwnFolder). Ship both folders with
+       the DLL. <DvrCoreAssets>false</DvrCoreAssets> leaves them out. -->
+  <ItemGroup Condition="'$(DvrCoreAssets)' != 'false'">
+    <None Include="$(MSBuildThisFileDirectory)fonts\*.ttf;$(MSBuildThisFileDirectory)fonts\*.txt"
+          Link="fonts\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" Visible="false" />
+    <None Include="$(MSBuildThisFileDirectory)icons\*.png;$(MSBuildThisFileDirectory)icons\*.txt"
+          Link="icons\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" Visible="false" />
+  </ItemGroup>
+
+  <Target Name="DvrCoreCheck" BeforeTargets="CoreCompile">
+    <Error Condition="'$(DvrRuntime)' != 'Mono' and '$(DvrRuntime)' != 'IL2CPP'"
+           Text="dvr-unity-core: set DvrRuntime to Mono or IL2CPP before importing DvrUnityCore.props (got '$(DvrRuntime)')." />
+    <Error Condition="'$(DvrPipeline)' != 'BuiltIn' and '$(DvrPipeline)' != 'URP'"
+           Text="dvr-unity-core: set DvrPipeline to BuiltIn or URP before importing DvrUnityCore.props (got '$(DvrPipeline)')." />
+    <Error Condition="'$(DvrCoreVersion)' != '' and '$(DvrCoreVersion)' != '$(DvrCoreActualVersion)'"
+           Text="dvr-unity-core: this mod is built for core $(DvrCoreVersion), but the core at $(MSBuildThisFileDirectory) is $(DvrCoreActualVersion). Check out core v$(DvrCoreVersion), or move the mod to $(DvrCoreActualVersion) (test it, then change DvrCoreVersion in its Directory.Build.props)." />
+    <Message Importance="high" Condition="'$(DvrCoreVersion)' == ''"
+             Text="dvr-unity-core $(DvrCoreActualVersion): this mod doesn't say which core version it's built for; set DvrCoreVersion in its Directory.Build.props." />
+  </Target>
+
+  <!-- VrCore.Version, from VERSION. -->
+  <Target Name="DvrCoreVersionSource" BeforeTargets="CoreCompile">
+    <PropertyGroup>
+      <DvrCoreVersionFile>$(IntermediateOutputPath)DvrCoreVersion.g.cs</DvrCoreVersionFile>
+    </PropertyGroup>
+    <WriteLinesToFile File="$(DvrCoreVersionFile)" Overwrite="true" WriteOnlyWhenDifferent="true"
+                      Lines="namespace Dvr { internal static partial class VrCore { public const string Version = &quot;$(DvrCoreActualVersion)&quot;%3B } }" />
+    <ItemGroup>
+      <Compile Include="$(DvrCoreVersionFile)" />
+    </ItemGroup>
+  </Target>
+</Project>

@@ -210,9 +210,13 @@ namespace Dvr
         public void BeginFrame()
         {
             if (Simulated) return;
+            PollEvents();
+            var step = PacingStep();
             bool ok;
-            if (Threaded)
+            if (VrQuit.Quitting) ok = false;   // quitting: never wait on the compositor again
+            else if (Threaded || !(step.Pace || step.Probe))
             {
+                // Threaded: the render thread waits. Paused: nobody waits; poses without blocking.
                 float sinceVsync = 0;
                 ulong frameCounter = 0;
                 System.GetTimeSinceLastVsync(ref sinceVsync, ref frameCounter);
@@ -226,6 +230,7 @@ namespace Dvr
                 long start = global::System.Diagnostics.Stopwatch.GetTimestamp();
                 ok = Compositor.WaitGetPoses(renderPoses, gamePoses) == EVRCompositorError.None;
                 WaitTimer.Add(start);
+                lastWaitTicks = global::System.Diagnostics.Stopwatch.GetTimestamp() - start;
             }
             var hmd = renderPoses[OpenVR.k_unTrackedDeviceIndex_Hmd];
             HeadValid = ok && hmd.bPoseIsValid;
@@ -237,6 +242,62 @@ namespace Dvr
             LogPoses(hmd, ok);
             LeftHand.Update(System, renderPoses);
             RightHand.Update(System, renderPoses);
+        }
+
+        // ---- pacing paused while the headset is gone (VrPacing) ----
+
+        private readonly VrPacing pacing = new VrPacing();
+        // The last WaitGetPoses' time (Stopwatch ticks; -1: none since read). Direct: set
+        // in BeginFrame. Threaded: set on the render thread, taken by the main thread.
+        private long lastWaitTicks = -1;
+        private static long renderWaitTicks = -1;
+        // What the render thread does: 0 pace (submit and wait), 1 paused (nothing), 2 probe (wait once, no submit).
+        private static volatile int renderMode;
+        private bool submitThisFrame = true;
+        private bool standby;
+        private float nextStandbyCheck;
+
+        /// <summary>Pacing is paused: the headset is gone, the game runs at its own frame rate and submits nothing.</summary>
+        public bool PacingPaused => pacing.Paused;
+
+        private VrPacing.Step PacingStep()
+        {
+            float now = Time.realtimeSinceStartup;
+            if (now >= nextStandbyCheck)
+            {
+                nextStandbyCheck = now + 0.5f;
+                standby = System.GetTrackedDeviceActivityLevel(OpenVR.k_unTrackedDeviceIndex_Hmd) == EDeviceActivityLevel.k_EDeviceActivityLevel_Standby;
+            }
+            long ticks = Threaded ? global::System.Threading.Interlocked.Exchange(ref renderWaitTicks, -1) : lastWaitTicks;
+            lastWaitTicks = -1;
+            double waitMs = ticks < 0 ? -1 : ticks * 1000.0 / global::System.Diagnostics.Stopwatch.Frequency;
+            var step = pacing.Update(waitMs, frameDuration * 1000.0, standby, now);
+            if (step.Changed)
+                VrCore.Info(step.Pace
+                    ? "[vr] headset back: pacing and submitting to SteamVR again"
+                    : $"[vr] headset gone ({(standby ? "standby" : "SteamVR's compositor not answering")}): pacing paused, the game runs at its own frame rate");
+            submitThisFrame = step.Pace;
+            renderMode = step.Pace ? 0 : step.Probe ? 2 : 1;
+            return step;
+        }
+
+        /// <summary>This frame's SteamVR events (BeginFrame reads them all; VrKeyboard looks through them).</summary>
+        public readonly global::System.Collections.Generic.List<VREvent_t> Events = new global::System.Collections.Generic.List<VREvent_t>();
+        private readonly global::System.Collections.Generic.List<uint> eventTypes = new global::System.Collections.Generic.List<uint>();
+        private static readonly uint EventSize = (uint)Marshal.SizeOf(typeof(VREvent_t));
+
+        // Every SteamVR event, once a frame. A quit from SteamVR (VrQuit) is answered
+        // here, whatever else the mod does: acknowledge, stop the compositor calls, quit.
+        private void PollEvents()
+        {
+            Events.Clear();
+            eventTypes.Clear();
+            var ev = new VREvent_t();
+            while (System.PollNextEvent(ref ev, EventSize)) { Events.Add(ev); eventTypes.Add(ev.eventType); }
+            if (!VrQuit.Handle(eventTypes)) return;
+            VrCore.Info("[vr] SteamVR asked the game to quit: acknowledging, stopping VR submits, quitting");
+            try { System.AcknowledgeQuit_Exiting(); } catch (Exception e) { VrCore.Warn("[vr] AcknowledgeQuit_Exiting: " + e.Message); }
+            Application.Quit();
         }
 
         /// <summary>
@@ -270,7 +331,7 @@ namespace Dvr
 
         public void SubmitNow(IntPtr leftTexture, IntPtr rightTexture)
         {
-            if (Simulated || Threaded) return;
+            if (Simulated || Threaded || !submitThisFrame || VrQuit.Quitting) return;   // paused or quitting: nothing to the compositor
             long start = global::System.Diagnostics.Stopwatch.GetTimestamp();
             SubmitEye(0, leftTexture, frameHead);
             SubmitEye(1, rightTexture, frameHead);
@@ -314,12 +375,15 @@ namespace Dvr
             var s = current;
             if (s == null) return;
             RenderThreadCallbacks++;
-            if (s.Simulated) return;
+            if (s.Simulated || VrQuit.Quitting) return;   // quitting: nothing may block Unity's shutdown here
             try
             {
+                int mode = renderMode;
+                if (mode == 1) return;   // pacing paused (headset gone): no submit, no wait
+                if (mode == 2) renderMode = 1;   // a probe: one wait, then paused again until the main thread decides
                 var frame = Pending[slot & (Pending.Length - 1)];
                 long start = global::System.Diagnostics.Stopwatch.GetTimestamp();
-                if (frame.Left != IntPtr.Zero)
+                if (mode == 0 && frame.Left != IntPtr.Zero)
                 {
                     s.SubmitEye(0, frame.Left, frame.Head);
                     s.SubmitEye(1, frame.Right, frame.Head);
@@ -328,6 +392,7 @@ namespace Dvr
                 start = global::System.Diagnostics.Stopwatch.GetTimestamp();
                 s.Compositor.WaitGetPoses(s.renderThreadPoses, s.gamePoses);
                 WaitTimer.Add(start);
+                global::System.Threading.Interlocked.Exchange(ref renderWaitTicks, global::System.Diagnostics.Stopwatch.GetTimestamp() - start);
             }
             catch (Exception e)
             {

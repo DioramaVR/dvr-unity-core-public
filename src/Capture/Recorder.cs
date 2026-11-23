@@ -49,14 +49,25 @@ internal static class Recorder
         ffmpegPath = config.Bind("Recording", "FfmpegPath", "ffmpeg", "ffmpeg to record videos with (a full path, or just ffmpeg if it's on the PATH).");
         frameRate = config.Bind("Recording", "FrameRate", 60, "Video frame rate.");
         encoder = config.Bind("Recording", "Encoder", "h264_nvenc", "ffmpeg video encoder: h264_nvenc (NVIDIA), h264_amf (AMD), h264_qsv (Intel) or libx264 (any PC; uses the processor, so slower).");
+        countdownSeconds = config.Bind("Recording", "CountdownSeconds", 3f, "Seconds from pressing Photo (or starting a video) to the shot, with the VR menu and button bars hidden meanwhile. 0: at once.");
         VrUiKit.VrSettings.Add(new VrUiKit.ActionSetting("Recording", "Video (needs ffmpeg)", VideoText, ToggleVideo));
-        VrUiKit.VrSettings.Add(new VrUiKit.ActionSetting("Recording", "Photo", () => photoText ?? "Take photo", TakePhoto));
+        VrUiKit.VrSettings.Add(new VrUiKit.ActionSetting("Recording", "Photo", PhotoText, TakePhoto));
+        if (!registered)
+        {
+            registered = true;
+            // Unbound by default: the player binds them on the Controls tab. Load again, so a
+            // saved binding applies even when the mod loaded the bindings before calling Init.
+            VrUiKit.VrInput.Register(PhotoAction, "Take photo", "Recording", null);
+            VrUiKit.VrInput.Register(VideoAction, "Start or stop video", "Recording", null);
+            VrUiKit.VrInput.Load();
+        }
         // If the game closes mid-recording, still finish the file.
         AppDomain.CurrentDomain.ProcessExit += OnProcessExit;
     }
 
     static string VideoText()
     {
+        if (countdown.Active && countdownFor == Kind.Video) return $"Starting in {countdown.Remaining(Time.unscaledTime)}  (press to cancel)";
         if (Recording)
         {
             int s = (int)(Time.unscaledTime - startedAt);
@@ -68,7 +79,8 @@ internal static class Recorder
     public static void ToggleVideo()
     {
         if (Recording) Stop();
-        else Start();
+        else if (countdown.Active) CancelCountdown();
+        else BeginCountdown(Kind.Video);
     }
 
     static void Start()
@@ -165,6 +177,9 @@ internal static class Recorder
     // Per frame: a recording whose ffmpeg died is reported, not left "recording".
     public static void Update()
     {
+        if (VrUiKit.VrInput.Pressed(PhotoAction)) TakePhoto();
+        if (VrUiKit.VrInput.Pressed(VideoAction)) ToggleVideo();
+        TickCountdown();
         if (ffmpeg != null && ffmpeg.HasExited)
         {
             VrCore.Warn($"[record] ffmpeg exited ({ffmpeg.ExitCode}); see {Path.ChangeExtension(videoFile, ".log")}");
@@ -173,6 +188,7 @@ internal static class Recorder
             SpectatorCam.Enabled = spectatorWasOn;
         }
         if (photoAt >= 0 && Time.frameCount >= photoAt) FinishPhoto();
+        if (restoreAt >= 0 && Time.frameCount >= restoreAt) { restoreAt = -1; HideOurs = false; showRenderers?.Invoke(); showRenderers = null; Restore(); }
     }
 
     // The game is closing: just tell ffmpeg to finish (no Unity calls this late).
@@ -196,13 +212,30 @@ internal static class Recorder
 
     public static void TakePhoto()
     {
+        if (photoAt >= 0 || restoreAt >= 0) return;   // one at a time
+        if (countdown.Active) { CancelCountdown(); return; }   // pressed again: cancelled
+        BeginCountdown(Kind.Photo);
+    }
+
+    static string PhotoText()
+    {
+        if (countdown.Active && countdownFor == Kind.Photo) return $"In {countdown.Remaining(Time.unscaledTime)}  (press to cancel)";
+        return photoText ?? "Take photo";
+    }
+
+    // The countdown is over: our things leave the eyes and the spectator from now on,
+    // and the shot is taken once a frame has rendered without them.
+    static void ShootPhoto()
+    {
         var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyPictures), "Diorama VR");
         Directory.CreateDirectory(dir);
         photoBase = Path.Combine(dir, $"{FilePrefix} {DateTime.Now:yyyy-MM-dd HH-mm-ss}");
         // The spectator view needs a frame or two to be on the screen.
         photoSpectatorWasOn = SpectatorCam.Enabled;
         SpectatorCam.Enabled = true;
-        photoAt = Time.frameCount + (photoSpectatorWasOn ? 1 : 3);
+        HideOurs = true;
+        if (!OurVisuals.VisualLayerSeparate) showRenderers = OurVisuals.HideRenderers();   // our layer is the game's too: not by mask
+        photoAt = Time.frameCount + (photoSpectatorWasOn ? 2 : 3);
         photoText = "...";
     }
 
@@ -223,6 +256,112 @@ internal static class Recorder
         SpectatorCam.Enabled = photoSpectatorWasOn || Recording;
         photoText = $"Saved {DateTime.Now:HH:mm:ss}";
         VrCore.Info($"[record] photo {photoBase}.png");
+        restoreAt = Time.frameCount + 1;   // the screenshot is taken at the end of this frame
+    }
+
+    // ---- the countdown, and hiding our things for the shot ----
+
+    public const string PhotoAction = "dvr.record.photo", VideoAction = "dvr.record.video";
+    enum Kind { Photo, Video }
+    static readonly CaptureCountdown countdown = new CaptureCountdown();
+    static Kind countdownFor;
+    static ConfigEntry<float> countdownSeconds;
+    static bool registered, menuWasOpen, hiding;
+    static int restoreAt = -1;
+    static GameObject[] dots;
+
+    /// <summary>
+    /// For the frames of a photo: the rigs (TableRig, VrRig) and the spectator leave our
+    /// things out (the VR layer: laser, hands, panels, bars; popped-out windows).
+    /// </summary>
+    public static bool HideOurs { get; private set; }
+
+    /// <summary>A camera mask without our things while <see cref="HideOurs"/>.</summary>
+    /// (Our VR layer only where it's ours alone: OurVisuals; otherwise our renderers are switched off for the shot.)
+    public static int WithoutOurs(int mask) => HideOurs ? OurVisuals.Strip(mask, VrCore.VisualLayer, OurVisuals.VisualLayerSeparate, VrUiKit.VrPopout.LayersMask) : mask;
+
+    static Action showRenderers;
+
+    static void BeginCountdown(Kind kind)
+    {
+        countdownFor = kind;
+        // The menu and the button bars go at once, so they aren't in view when it fires.
+        menuWasOpen = VrUiKit.VrUiMenu.Open;
+        if (menuWasOpen) VrUiKit.VrUiMenu.Close();
+        VrUiKit.VrHotbar.Suppressed = true;
+        hiding = true;
+        float seconds = countdownSeconds?.Value ?? 0;
+        countdown.Start(Time.unscaledTime, seconds);
+        VrCore.Info($"[record] {kind.ToString().ToLowerInvariant()} in {seconds:F0} s");
+    }
+
+    static void CancelCountdown()
+    {
+        countdown.Cancel();
+        ShowDots(0);
+        Restore();
+        VrCore.Info("[record] countdown cancelled");
+    }
+
+    static void TickCountdown()
+    {
+        if (!countdown.Active) return;
+        float now = Time.unscaledTime;
+        if (countdown.Due(now))
+        {
+            ShowDots(0);
+            if (countdownFor == Kind.Photo) ShootPhoto();
+            else { Start(); Restore(); }
+            return;
+        }
+        ShowDots(countdown.Remaining(now));
+    }
+
+    // The menu and the bars back as they were.
+    static void Restore()
+    {
+        if (!hiding) return;
+        hiding = false;
+        VrUiKit.VrHotbar.Suppressed = false;
+        var host = VrUiKit.VrUi.Host;
+        if (menuWasOpen && host != null && !VrUiKit.VrUiMenu.Open) VrUiKit.VrUiMenu.Show(host);
+        menuWasOpen = false;
+    }
+
+    // The countdown in the headset: a dot a second left, in a row over the laser hand. On our
+    // layer, so never in a shot (they go before it, and the layer is left out for it anyway).
+    static void ShowDots(int count)
+    {
+        var host = VrUiKit.VrUi.Host;
+        if (count <= 0 || host == null)
+        {
+            if (dots != null) foreach (var d in dots) if (d != null && d.activeSelf) d.SetActive(false);
+            return;
+        }
+        if (dots == null || dots[0] == null)
+        {
+            dots = new GameObject[5];
+            for (int i = 0; i < dots.Length; i++)
+            {
+                dots[i] = VrVisuals.Primitive(PrimitiveType.Sphere, VrCore.Name + " Countdown " + i, new Color(0.969f, 0.722f, 0.004f, 1f), VrCore.VisualLayer);
+                UnityEngine.Object.DontDestroyOnLoad(dots[i]);
+            }
+        }
+        count = Math.Min(count, dots.Length);
+        var hand = host.LeftHanded ? host.LeftHand : host.RightHand;
+        var up = global::System.Numerics.Vector3.Transform(global::System.Numerics.Vector3.UnitY, hand.Rotation);
+        var right = global::System.Numerics.Vector3.Transform(global::System.Numerics.Vector3.UnitX, hand.Rotation);
+        float size = 0.015f * host.WorldScale;
+        for (int i = 0; i < dots.Length; i++)
+        {
+            bool on = i < count;
+            if (dots[i].activeSelf != on) dots[i].SetActive(on);
+            if (!on) continue;
+            var p = hand.Position + up * 0.07f + right * ((i - (count - 1) / 2f) * 0.025f);
+            var world = host.TrackingToWorld(new Pose(p, hand.Rotation));
+            dots[i].transform.position = world.UnityPosition;
+            dots[i].transform.localScale = new Vector3(size, size, size);
+        }
     }
 }
 }

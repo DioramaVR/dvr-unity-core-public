@@ -67,7 +67,7 @@ namespace Dvr
             cam.nearClipPlane = like.nearClipPlane;
             cam.farClipPlane = like.farClipPlane;
             cam.ResetProjectionMatrix();
-            cam.cullingMask = like.cullingMask;
+            cam.cullingMask = Recorder.WithoutOurs(like.cullingMask);
             cam.clearFlags = like.clearFlags;
             cam.backgroundColor = like.backgroundColor;
             VrPipeline.CopySpectatorSettings(cam, like);

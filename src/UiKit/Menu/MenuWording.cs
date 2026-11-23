@@ -101,6 +101,8 @@ static class MenuWording
         ["Field of view"] = "Of the spectator view on the monitor",
         ["Smoothing"] = "Evens out head movement in videos",
         ["Show VR menu in recordings"] = "Leave it off for clean videos",
+        ["Capture diorama"] = "The table's circle, from 208 views, for a 3D model",
+        ["Show diorama ring"] = "Marks what a capture takes, on the ground",
         ["Group names"] = "A label over each group of keys",
         ["Left-handed"] = "Laser on the left hand",
         ["Swap sticks"] = "The two thumbsticks trade jobs",

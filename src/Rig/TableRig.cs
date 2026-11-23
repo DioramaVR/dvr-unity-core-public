@@ -237,6 +237,9 @@ namespace Dvr
             if (InWorld) Step(main);
             else model.Anchored = false;
             PlaceEyes(main);
+            // Diorama capture (a game that offers it): the game's world, from the eyes' layers.
+            if (DioramaCapture.Offered)
+                DioramaCapture.Update(this, main, eyes[0], InWorld ? Desktop.GameMask(main) & ~EyeLayersOff : 0);
 
             if (Time.unscaledTime >= nextDiagnostic)
             {
@@ -358,7 +361,7 @@ namespace Dvr
             float above = Mathf.Max(tuning.CutAbove * scale, tuning.CutMinAboveWorld), below = tuning.CutBelow * scale;
             bool mask = cut && CylinderMask.Available;
             float near = 0.02f * scale, farMax = InWorld ? Mathf.Max(60f * scale, 2000f) : 100f;
-            int worldMask = InWorld ? (Desktop.GameMask(main) & ~EyeLayersOff) | (1 << VrCore.VisualLayer) : 0;
+            int worldMask = InWorld ? Recorder.WithoutOurs((Desktop.GameMask(main) & ~EyeLayersOff) | (1 << VrCore.VisualLayer)) : 0;
             var centre = model.Anchor;
             bool plain = InWorld && (turntable || tuning.Background != Backdrop.Game);
             float furthest = 0;

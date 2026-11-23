@@ -35,6 +35,12 @@ static class VrPopout
     static readonly List<Group> groups = new();
     static readonly Dictionary<string, int> groupOf = new();
     static List<int> freeLayers;
+
+    // The spare layers popped-out windows may be on: cameras that must not see them (the diorama capture) leave these out.
+    internal static int LayersMask
+    {
+        get { int m = 0; if (freeLayers != null) foreach (var l in freeLayers) m |= 1 << l; return m; }
+    }
     static bool active, loggedGroups;
     static float nextFind;
     // The renderer couldn't be widened before a level loaded (PrepareLayers): Popout is off for the session, windows are Cutout.

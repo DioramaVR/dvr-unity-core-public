@@ -88,6 +88,7 @@ static class MenuModel
         (MenuPage.Controls, "preset", new[] { "Preset", "Use preset", "Save as new preset", "Delete preset" }),
         (MenuPage.Capture, "spectator", new[] { "Spectator view on monitor", "Spectator field of view", "Spectator smoothing" }),
         (MenuPage.Capture, "recordings", new[] { "Show VR menu in recordings" }),
+        (MenuPage.Capture, "diorama", new[] { "Capture diorama", "Show diorama ring" }),
         (MenuPage.Graphics, "display", new[] { "Monitor shows the game", "Shadows", "Post-processing", "Resolution scale" }),
     };
 
@@ -477,6 +478,7 @@ static class MenuModel
         {
             Section(m.Page, "spectator", "Spectator view", "video", MenuColumn.Left),
             Section(m.Page, "recordings", "Recordings", "film", MenuColumn.Right),
+            Section(m.Page, "diorama", "Diorama", "rotate-3d", MenuColumn.Right),
         };
         Fill(m, sections, Rows().Where(r => r.s != photo && r.s != video));
     }

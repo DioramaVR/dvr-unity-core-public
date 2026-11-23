@@ -82,6 +82,8 @@ static class VrHotbar
 
     // Any bar showing (for the mods' sims).
     public static bool Visible => bars.Any(b => b.Visible);
+    /// <summary>All bars hidden (the Recorder's countdown and shot), whatever else says.</summary>
+    public static bool Suppressed;
     // Arranging: while the VR menu is open the bars are solid and their buttons don't press.
     public static bool Placing => VrUiMenu.Open;
     public static void MarkDirty() { foreach (var b in bars) b.Dirty = true; }
@@ -97,7 +99,7 @@ static class VrHotbar
             var set = VrHotkeys.Sets[i];
             var bar = bars.FirstOrDefault(b => b.Set == set);
             if (bar == null) bars.Add(bar = new Bar { Set = set, Index = i });
-            if (!host.Active || !VrHotkeys.CanPress || !VrHotkeys.IsOn(set)) { Hide(bar); continue; }
+            if (Suppressed || !host.Active || !VrHotkeys.CanPress || !VrHotkeys.IsOn(set)) { Hide(bar); continue; }
             if (!bar.Restored) { Restore(host, bar); bar.Restored = true; }
             if (!Ensure(host, bar)) continue;
             LookAtLive(bar);

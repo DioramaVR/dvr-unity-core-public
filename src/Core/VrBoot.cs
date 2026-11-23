@@ -55,10 +55,25 @@ namespace Dvr
             if (!loggedCap)
             {
                 loggedCap = true;
-                VrCore.Info($"Game frame pacing: vSyncCount {QualitySettings.vSyncCount}, targetFrameRate {Application.targetFrameRate}; uncapping for VR");
+                gameVSync = QualitySettings.vSyncCount;
+                gameTarget = Application.targetFrameRate;
+                VrCore.Info($"Game frame pacing: vSyncCount {gameVSync}, targetFrameRate {gameTarget}; uncapping for VR");
             }
-            if (QualitySettings.vSyncCount != 0) QualitySettings.vSyncCount = 0;
-            if (Application.targetFrameRate != -1) Application.targetFrameRate = -1;
+            // Headset gone (VrPacing): nothing paces the frames, so the game's own caps come back
+            // (vsync at least, so it doesn't spin). Headset back: uncapped again.
+            var (vSync, target) = FrameCaps(session.PacingPaused, gameVSync, gameTarget);
+            if (QualitySettings.vSyncCount != vSync) QualitySettings.vSyncCount = vSync;
+            if (Application.targetFrameRate != target) Application.targetFrameRate = target;
+        }
+
+        static int gameVSync = 1, gameTarget = -1;
+
+        /// <summary>The frame caps: none while VR paces the frames; the game's own while pacing is paused (at least vsync if it had no cap at all).</summary>
+        internal static (int vSync, int target) FrameCaps(bool pacingPaused, int gameVSync, int gameTarget)
+        {
+            if (!pacingPaused) return (0, -1);
+            if (gameVSync == 0 && gameTarget <= 0) return (1, -1);
+            return (gameVSync, gameTarget);
         }
 
         static FieldInfo hasFocusField;

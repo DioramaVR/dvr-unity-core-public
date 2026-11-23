@@ -172,7 +172,9 @@ namespace Dvr
                 cam.nearClipPlane = near;
                 cam.farClipPlane = far;
                 cam.projectionMatrix = vr.GetProjection(i, near, far);
-                cam.cullingMask = main.cullingMask | (1 << VisualLayer);
+                cam.cullingMask = Recorder.HideOurs   // a photo's frames: none of ours
+                    ? OurVisuals.Strip(main.cullingMask | (1 << VisualLayer), VisualLayer, OurVisuals.LayerSeparate(VisualLayer, LayerMask.LayerToName(VisualLayer)), VrUiKit.VrPopout.LayersMask)
+                    : main.cullingMask | (1 << VisualLayer);
                 cam.clearFlags = skybox ? CameraClearFlags.Skybox : CameraClearFlags.SolidColor;
                 cam.backgroundColor = RenderSettings.fogColor;
                 VrPipeline.CopyEyeSettings(cam, main);

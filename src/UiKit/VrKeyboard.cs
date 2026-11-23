@@ -73,9 +73,8 @@ static class VrKeyboard
 
     static void PollEvents(VrSession vr, CVROverlay overlay)
     {
-        var ev = new VREvent_t();
-        uint size = (uint)Marshal.SizeOf<VREvent_t>();
-        while (vr.System.PollNextEvent(ref ev, size))
+        // VrSession.BeginFrame read this frame's events (and answers a quit from SteamVR).
+        foreach (var ev in vr.Events)
         {
             switch ((EVREventType)ev.eventType)
             {

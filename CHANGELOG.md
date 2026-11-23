@@ -9,7 +9,55 @@ Each mod says which version it's built and tested with (`DvrCoreVersion` in its
 version, and the installer builds each mod against the core tag it names. See
 README.md, "Versions".
 
-## 0.1.2 (release branch `release/0.1.2`, not tagged yet; to be headset-tested on the Steam Frame and a Quest)
+## 0.1.3 (release branch `release/0.1.3`, not tagged yet)
+
+Nothing a mod has to change in code; a rebuild picks everything up. A mod
+with its own eye cameras can use `Recorder.WithoutOurs` for clean photos.
+Diorama capture is off unless a game offers it.
+
+- **Fix: our VR layer is never left out of a shot when the game uses it**
+  (`OurVisuals`). Photos, the spectator and the diorama capture leave our VR
+  layer out only when it's ours alone (not 0, not a layer the game named).
+  Cataclismo falls back to Default (0); leaving that out would have taken the
+  game's world with it. Then our renderers (roots named after the core, or
+  `VrUi ...`) are switched off for the shot instead. Popout layers are always
+  left out.
+
+- **Photo and video countdown** (`Recorder`, `CaptureCountdown`). Photo (and
+  starting a video) hides the VR menu and button bars at once, counts down
+  (`[Recording] CountdownSeconds`, 3; 0 = at once) with dots over the laser
+  hand, then shoots; pressing again cancels. The photo's frames leave all of
+  ours out of the eyes and the spectator (the VR layer: laser, hands, panels,
+  bars, the dots; popped-out windows). Then the menu and bars come back. New
+  bindable actions "Take photo" and "Start or stop video" (Controls tab,
+  unbound by default), so neither needs the menu. Nothing for a mod to change
+  unless it has its own eye cameras (`Recorder.WithoutOurs`).
+
+- **Pacing paused while the headset is gone** (`VrPacing`). When the headset
+  goes to standby, or SteamVR's compositor keeps WaitGetPoses blocked (10 waits
+  in a row over 3 frames; the Steam Frame's link dropping did this, and the
+  flat game crawled at about 9 fps), the game stops waiting and submitting,
+  reads poses without blocking and gets its own vsync and frame cap back
+  (`VrBoot.UncapFrameRate`). Every 2 s one WaitGetPoses probes; a quick one,
+  out of standby, resumes VR pacing. Logged both ways. Nothing for a mod to
+  change.
+
+- **Fix: quitting from SteamVR** (`VrQuit`; not yet confirmed in a headset:
+  a Cataclismo test still didn't close from the dashboard, being looked into). `VrSession.BeginFrame` now reads
+  every SteamVR event each frame. On SteamVR's quit (the dashboard's Quit,
+  SteamVR shutting down) it acknowledges, stops all compositor waits and submits
+  (main and render thread, so nothing blocks Unity's shutdown) and quits the
+  game. Before, no mod read the event, and SteamVR killed the game after its
+  timeout. `VrKeyboard` reads the same events (`VrSession.Events`). Nothing for a
+  mod to change; a rebuild picks it up.
+
+- **Diorama capture** (`DioramaCapture`, bead vr-843): "Capture diorama" on the
+  Record tab, for a game that calls `DioramaCapture.Offer`. Captures the table's
+  region as 208 views with a nerfstudio `transforms.json`, for a Gaussian splat
+  and a game page's turntable (docs/DIORAMA-CAPTURE.md). Moved from TpmDiorama.
+  Off unless offered; hooks for freezing, hiding in-world UI and framing.
+
+## 0.1.2 (tagged `v0.1.2`, 2026-11-23)
 
 Nothing a mod has to change in code; every mod needs a rebuild to get the fixes.
 For the Steam Frame, the game's Steam app data also needs a VR launch option

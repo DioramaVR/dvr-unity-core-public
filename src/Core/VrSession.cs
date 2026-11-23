@@ -74,25 +74,32 @@ namespace Dvr
 
         /// <summary>
         /// Let TryStart launch SteamVR when it isn't running (the old behaviour).
-        /// Off by default: VR starts only if SteamVR is already up.
+        /// Off by default: VR starts if SteamVR is already up with a headset,
+        /// or launched with -dvr-vr (VrStart).
         /// </summary>
         public static bool LaunchSteamVr;
-        static bool loggedNoSteamVr; // "SteamVR is not running" said once, not on every retry
+        static VrStart.Rule? loggedRule; // each decision said once, not on every retry
+        static bool launchFailed; // a start of SteamVR by us failed: no more tries this session
 
         /// <summary>SteamVR's server (vrserver.exe) is running.</summary>
-        public static bool SteamVrRunning()
+        public static bool SteamVrRunning() => Running("vrserver", true);
+
+        /// <summary>SteamVR's compositor (vrcompositor.exe) is running: SteamVR has a headset.</summary>
+        public static bool CompositorRunning() => Running("vrcompositor", true);
+
+        static bool Running(string name, bool ifUnknown)
         {
             try
             {
-                var procs = global::System.Diagnostics.Process.GetProcessesByName("vrserver");
+                var procs = global::System.Diagnostics.Process.GetProcessesByName(name);
                 foreach (var p in procs) p.Dispose();
                 return procs.Length > 0;
             }
             catch (Exception e)
             {
                 // Can't tell: behave as before rather than lock VR out.
-                VrCore.Warn("[vr] could not check for SteamVR: " + e.Message);
-                return true;
+                VrCore.Warn($"[vr] could not check for {name}: " + e.Message);
+                return ifUnknown;
             }
         }
 
@@ -104,24 +111,29 @@ namespace Dvr
         /// </summary>
         public static VrSession TryStart(string pluginDir, bool allowThreaded = false)
         {
-            // OpenVR.Init launches SteamVR when it isn't running; we only want VR when
-            // the user started SteamVR themselves, so a game launched from Steam plays flat.
-            if (!LaunchSteamVr && !SteamVrRunning())
-            {
-                // Once, not on every retry (VrBoot.StartDue tries every 5 s while the game plays flat).
-                if (!loggedNoSteamVr) { loggedNoSteamVr = true; VrCore.Info("[vr] SteamVR is not running; VR off (start SteamVR first to play in VR; this is checked again every few seconds)"); }
-                return null;
-            }
-            if (loggedNoSteamVr) { loggedNoSteamVr = false; VrCore.Info("[vr] SteamVR is running now: starting VR"); }
+            // OpenVR.Init launches SteamVR when it isn't running, and blocks until it
+            // has a headset. So Init runs only once SteamVR has one: with -dvr-vr (a
+            // VR launch option) SteamVrStarter asks Steam to start SteamVR off the
+            // main thread first. A failed start isn't retried. See VrStart.
+            SteamVrStarter.Drain();
+            var decision = VrStart.Decide(Environment.GetCommandLineArgs(), Environment.GetEnvironmentVariable,
+                SteamVrRunning(), CompositorRunning(), LaunchSteamVr, launchFailed, SteamVrStarter.Current);
+            // Once per change, not on every retry (VrBoot.StartDue tries every 5 s while the game plays flat).
+            if (loggedRule != decision.Rule) { loggedRule = decision.Rule; VrCore.Info("[vr] " + decision.Describe()); }
+            if (decision.BeginSteamVr) SteamVrStarter.Begin();   // background thread; seen on a later call
+            if (decision.ShowsFrameNotice) FrameNotice.Show(VrStart.FrameNoticeText); // flat screen only, once
+            if (!decision.Start) return null;
             var dll = Path.Combine(pluginDir, "openvr_api.dll");
             if (!File.Exists(dll)) { VrCore.Error("[vr] openvr_api.dll not found at " + dll); return null; }
             // Load by full path so the DllImport("openvr_api") calls bind to it.
             if (LoadLibrary(dll) == IntPtr.Zero) { VrCore.Error("[vr] could not load " + dll); return null; }
-            if (!OpenVR.IsHmdPresent()) { VrCore.Info("[vr] no headset present; VR off"); return null; }
+            if (!decision.LaunchesSteamVr && !OpenVR.IsHmdPresent()) { VrCore.Info("[vr] no headset present; VR off"); return null; }
+            if (decision.LaunchesSteamVr) { launchFailed = true; VrCore.Info("[vr] OpenVR.Init"); }
 
             var err = EVRInitError.None;
             OpenVR.Init(ref err, EVRApplicationType.VRApplication_Scene);
             if (err != EVRInitError.None) { VrCore.Error("[vr] OpenVR init failed: " + err); return null; }
+            launchFailed = false;
 
             var s = new VrSession { System = OpenVR.System, Compositor = OpenVR.Compositor };
             if (s.Compositor == null)
@@ -142,15 +154,19 @@ namespace Dvr
                 float l = 0, r = 0, t = 0, b = 0;
                 s.System.GetProjectionRaw(eye, ref l, ref r, ref t, ref b);
                 s.eyeTangents[i] = new Vector4(l, r, t, b);
+                var ep = s.eyeToHead[i].UnityPosition; var er = s.eyeToHead[i].UnityRotation.eulerAngles;
+                VrCore.Info($"[vr] eye {i}: tangents l {l:F3} r {r:F3} t {t:F3} b {b:F3}, eye-to-head pos ({ep.x:F4}, {ep.y:F4}, {ep.z:F4}) rot ({er.x:F2}, {er.y:F2}, {er.z:F2})");
             }
 
             var propErr = ETrackedPropertyError.TrackedProp_Success;
             float hz = s.System.GetFloatTrackedDeviceProperty(OpenVR.k_unTrackedDeviceIndex_Hmd, ETrackedDeviceProperty.Prop_DisplayFrequency_Float, ref propErr);
             if (hz > 1) s.frameDuration = 1 / hz;
             s.vsyncToPhotons = s.System.GetFloatTrackedDeviceProperty(OpenVR.k_unTrackedDeviceIndex_Hmd, ETrackedDeviceProperty.Prop_SecondsFromVsyncToPhotons_Float, ref propErr);
+            VrCore.Info($"[vr] headset: {hz:F1} Hz, vsync to photons {s.vsyncToPhotons * 1000:F1} ms");
             bool renderThread = SystemInfo.renderingThreadingMode != UnityEngine.Rendering.RenderingThreadingMode.Direct;
             s.Threaded = renderThread && allowThreaded;
             current = s;
+            FrameNotice.Hide();
 
             string mode = s.Threaded ? "render-thread submit and pacing" : "main-thread submit and pacing";
             VrCore.Info($"[vr] OpenVR ready: {w}x{h} per eye, {hz:F0} Hz, {mode}, graphics {SystemInfo.graphicsDeviceType}, threading {SystemInfo.renderingThreadingMode}");
@@ -218,8 +234,31 @@ namespace Dvr
                 frameHead = hmd.mDeviceToAbsoluteTracking;
                 Head = Pose.FromOpenVR(frameHead);
             }
+            LogPoses(hmd, ok);
             LeftHand.Update(System, renderPoses);
             RightHand.Update(System, renderPoses);
+        }
+
+        /// <summary>
+        /// Diagnostics, off by default: for the first minute in VR, every 5 s, how often
+        /// the head pose was valid and what SteamVR's tracking said (used 2026-11-22 to
+        /// rule out bad poses on the Steam Frame). A mod or a sim can turn it on.
+        /// </summary>
+        public static bool LogPoseDiagnostics;
+        private int poseFrames, poseValid;
+        private float poseLogAt = -1, poseLogUntil;
+        private void LogPoses(TrackedDevicePose_t hmd, bool ok)
+        {
+            if (!LogPoseDiagnostics) return;
+            float now = Time.unscaledTime;
+            if (poseLogAt < 0) { poseLogAt = now + 5; poseLogUntil = now + 60; }
+            poseFrames++;
+            if (ok && hmd.bPoseIsValid) poseValid++;
+            if (now < poseLogAt || now > poseLogUntil) return;
+            var pos = Head.UnityPosition; var rot = Head.UnityRotation.eulerAngles;
+            VrCore.Info($"[vr] poses: head valid {poseValid}/{poseFrames}, tracking {hmd.eTrackingResult}, connected {hmd.bDeviceIsConnected}, head ({pos.x:F3}, {pos.y:F3}, {pos.z:F3}) rot ({rot.x:F1}, {rot.y:F1}, {rot.z:F1})");
+            poseFrames = poseValid = 0;
+            poseLogAt = now + 5;
         }
 
         /// <summary>Direct mode: main thread, after both eyes have rendered this frame (e.g. at end of frame).</summary>
@@ -317,9 +356,20 @@ namespace Dvr
         public (float left, float right, float bottom, float top) EyeTangents(int eye)
         {
             var t = eyeTangents[eye];
-            // OpenVR's vertical tangents are image-space (y down); flip for Unity's y up.
-            return (t.x, t.y, -t.w, -t.z);
+            return TangentsFromRaw(t.x, t.y, t.z, t.w);
         }
+
+        /// <summary>
+        /// GetProjectionRaw's left, right, top, bottom as view-space slopes, Unity's way up:
+        /// the frustum Valve's own ComposeProjection builds (idy = 1 / (bottom - top),
+        /// m11 = 2 idy, m12 = (bottom + top) idy), so pfTop is the slope at the bottom
+        /// of the view and pfBottom the one at the top. Until 2026-11-22 this was
+        /// flipped (bottom = -pfBottom, top = -pfTop): invisible on headsets whose up
+        /// and down angles match (Index), but the Steam Frame's are 49 deg up and 60
+        /// down, and the picture stretched and swam.
+        /// </summary>
+        public static (float left, float right, float bottom, float top) TangentsFromRaw(float left, float right, float top, float bottom) =>
+            (left, right, top, bottom);
 
         // Built through the struct's fields rather than the interop indexer.
         public static Matrix4x4 Projection(float left, float right, float bottom, float top, float near, float far)

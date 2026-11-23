@@ -17,7 +17,7 @@ Conventions:
 ```csharp
 VrCore.Init(Logger, "AtsVr");                // first: logging and the prefix for GameObject names
 VrCore.VisualLayer = 31;                     // only if the game's cameras mask out 31 (cataclismo: 0)
-var vr = VrSession.TryStart(pluginDir);      // null unless SteamVR is already running; VrSession.StartSimulated() for sims
+var vr = VrSession.TryStart(pluginDir);      // null if VR shouldn't start (below); VrSession.StartSimulated() for sims
 VrUi.Init(config, "atsvr-layouts");          // UI kit: binds [VrUi], loads layouts; also inits VrModes, VrHotkeys, VrPane, VrPieces
 // register windows / pieces / layouts / settings / hotkey sets here (sections 4 to 7)
 VrInput.Init(config, "atsvr-controls");
@@ -26,6 +26,35 @@ VrInput.Register(id, name, section, group, "Pointer.Trigger", ...);
 VrInput.Load();                              // after every Register
 VrMenu.Welcome("Game name", Plugin.Version, "tip 1", "tip 2", "tip 3");
 ```
+
+### When VR starts (`VrStart`, 2026-11-22)
+
+`TryStart` goes into VR by these rules, first match wins, and logs which one
+fired (`[vr] ...`, once per change; mods retry every few seconds while flat):
+
+1. **`-dvr-flat`** on the game's command line: flat, even with SteamVR running.
+2. **The core's own start of VR failed** earlier this session: flat, no more
+   tries. A failed `OpenVR.Init` freezes the game for about 15 s, so it is
+   tried once only.
+3. **`-dvr-vr`** on the command line: a VR launch option. This is how the
+   Steam Frame starts a game in VR, once the game's Steam data has a launch
+   option of type `vr` that passes `-dvr-vr` (docs/STEAM-FRAME.md). The mod can
+   also set `VrSession.LaunchSteamVr`. `SteamVrStarter`, on a background
+   thread, asks Steam to start SteamVR (`steam://rungameid/250820`) and waits
+   up to 2 minutes for `vrcompositor` (SteamVR has the headset). The game plays
+   flat meanwhile, then `OpenVR.Init` runs once. Nothing on Unity's main thread
+   waits for SteamVR.
+4. **SteamVR is running with a headset** (vrserver and vrcompositor): VR. This
+   is how most players start it. vrserver alone (no headset yet) waits, since
+   Init would block until a headset joins.
+5. **Launched from the Steam Frame's flat stream** (Steam sets
+   `SteamStreamingVRTransitionInvite`, no `-dvr-vr`): flat, with a hint in the
+   log and, for 10 s, a message on the flat screen (`FrameNotice`: "Steam Frame:
+   VR isn't set up for this game. Open the DioramaVR installer and press Fix
+   Steam Frame launch."; a desktop overlay, never in VR). Starting
+   SteamVR from a flat stream doesn't bring the Frame in, and froze games on
+   2026-11-22.
+6. Otherwise flat: a desktop launch with SteamVR off.
 
 ## 2. Every frame, in this order
 
@@ -757,6 +786,7 @@ panning the table (keep the game actions: placing, rotating a building).
 
 The build switches (`DvrRuntime`, `DvrPipeline`, `DvrEntityId`,
 `DvrNoBepInEx`, `DvrCoreOpenVR`) and what each one defines are in the README.
+`DvrPipeline` Custom: the mod brings its own `VrPipeline` (README, "Using it").
 
 IL2CPP rules:
 - Key objects by `VrCore.Key`, never by reference.

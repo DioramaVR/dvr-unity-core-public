@@ -9,6 +9,40 @@ Each mod says which version it's built and tested with (`DvrCoreVersion` in its
 version, and the installer builds each mod against the core tag it names. See
 README.md, "Versions".
 
+## 0.1.2 (release branch `release/0.1.2`, not tagged yet; to be headset-tested on the Steam Frame and a Quest)
+
+Nothing a mod has to change in code; every mod needs a rebuild to get the fixes.
+For the Steam Frame, the game's Steam app data also needs a VR launch option
+running the exe with `-dvr-vr` (the installer writes it; docs/STEAM-FRAME.md).
+Also: `VrSession.LogPoseDiagnostics` (off) logs head-pose validity for a minute;
+the start-up log now has each eye's projection tangents and eye-to-head.
+
+- **Fix: the eye projection's vertical was mirrored** (`VrSession.EyeTangents`,
+  `TangentsFromRaw`). It now builds the frustum Valve's ComposeProjection does
+  from GetProjectionRaw (pfTop is the slope at the bottom of the view). On
+  headsets with equal up and down angles (Index) nothing changes. On the Steam
+  Frame (49 deg up, 60 deg down) the picture stretched looking down and swam
+  with the head. Culling (`RigMath.FitFrustum`, CylinderCull's far fit) uses
+  the same tangents and is fixed with it. Mods only get it once rebuilt.
+
+- **Launch options `-dvr-vr` and `-dvr-flat`** (`VrStart`, docs/HOOKS.md
+  section 1). `-dvr-vr` (a VR launch option; the Steam Frame uses it) asks
+  Steam to start SteamVR on a background thread (`SteamVrStarter`), waits for
+  the headset, then starts VR, once; if that fails, it isn't tried again that
+  session (a failed `OpenVR.Init` freezes the game for about 15 s). SteamVR
+  already running now needs a headset (vrcompositor) before Init. `-dvr-flat`
+  keeps the game flat. A game launched from the Steam Frame's desktop stream (`SteamStreamingVRTransitionInvite`) stays
+  flat and says so in its log and, for 10 s, on the flat screen (`FrameNotice`:
+  the player is sent to the installer's Fix Steam Frame launch): starting
+  SteamVR from the game doesn't bring the Frame into VR (docs/STEAM-FRAME.md). A desktop launch with SteamVR off
+  still plays flat. Nothing for a mod to change.
+
+- **`DvrPipeline` Custom**, for a game on its own scriptable render pipeline
+  (roguetrader-vr: Owlcat's Waaagh). The core compiles no pipeline file and
+  defines `DVR_CUSTOM_PIPELINE`; the mod brings `Dvr.VrPipeline`, starting from
+  `src/Pipeline/Custom/VrPipeline.Custom.cs.template` (README, "Using it").
+  `check/Mono.Custom` compiles the template. BuiltIn and URP are unchanged.
+
 ## 0.1.1 (tagged `v0.1.1`, 2026-11-07; headset-tested on Two Point Museum)
 
 Nothing a mod has to change. Every addition below is optional.

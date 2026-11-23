@@ -1,0 +1,103 @@
+// A starting point for a game on its own scriptable render pipeline (DvrPipeline
+// Custom; Rogue Trader's "Waaagh"). Not compiled by the core: copy it into the
+// mod (as VrPipeline.<Game>.cs), keep the namespace and class, and fill in what
+// the game's pipeline can do. check/Mono.Custom compiles this file as it is, so
+// the list of members here is the one the core needs.
+//
+// As it stands it hooks any SRP's per-camera callbacks (RenderPipelineManager),
+// and does everything else the way the built-in pipeline does: plain Camera
+// settings, no renderer list, no per-camera shadows or post-processing. The
+// Graphics tab hides Shadows and Post-processing unless the mod says it handles
+// them (RigSettings.HandledByMod), since Name isn't "URP".
+
+using System.Collections.Generic;
+using UnityEngine;
+using UnityEngine.Rendering;
+
+namespace Dvr
+{
+    internal static partial class VrPipeline
+    {
+        /// <summary>Shown in logs (VrRecon). "URP" turns on the Graphics tab's Shadows and Post-processing rows; anything else leaves them to RigSettings.HandledByMod.</summary>
+        public const string Name = "custom";
+
+        /// <summary>The layers the game's renderer draws (null: not known yet). URP filters by renderer; most SRPs don't: every layer.</summary>
+        public static int? RendererLayers(out string info) { info = "custom pipeline: no renderer layer filter known"; return ~0; }
+
+        /// <summary>Make the renderer draw these layers too (VrPopout's windows). True if it already does, or now does.</summary>
+        public static bool WidenRendererLayers(int layers, out string info) { info = "custom pipeline: nothing to widen"; return true; }
+
+        /// <summary>For VrRecon: the camera's pipeline settings.</summary>
+        public static string DescribeCamera(Camera c) => $"custom pipeline, hdr {c.allowHDR}";
+
+        /// <summary>Each frame, per eye: what the eye takes from the game's camera (the SRP's additional camera data, its renderer...).</summary>
+        public static void CopyEyeSettings(Camera eye, Camera game)
+        {
+            eye.allowHDR = game.allowHDR;
+        }
+
+        /// <summary>Each frame: the spectator camera (and a diorama capture's camera) copies an eye.</summary>
+        public static void CopySpectatorSettings(Camera cam, Camera eye)
+        {
+            cam.allowHDR = eye.allowHDR;
+            RequireDepthTexture(cam, (eye.depthTextureMode & DepthTextureMode.Depth) != 0);
+        }
+
+        /// <summary>The camera renders a depth texture (CylinderMask's cut reads it). An SRP usually asks through its own camera data.</summary>
+        public static void RequireDepthTexture(Camera cam, bool on)
+        {
+            var mode = on ? cam.depthTextureMode | DepthTextureMode.Depth : cam.depthTextureMode & ~DepthTextureMode.Depth;
+            if (on && (cam.depthTextureMode & DepthTextureMode.Depth) == 0) addedDepth.Add(VrCore.Key(cam));
+            if (cam.depthTextureMode != mode) cam.depthTextureMode = mode;
+        }
+
+        private static readonly HashSet<long> addedDepth = new HashSet<long>();
+
+        /// <summary>After RequireDepthTexture(eye, true): off again only if it was off before.</summary>
+        public static void ReleaseDepthTexture(Camera eye)
+        {
+            if (addedDepth.Remove(VrCore.Key(eye))) RequireDepthTexture(eye, false);
+        }
+
+        /// <summary>Shadows on or off for one camera (the Graphics tab's Shadows). Nothing, where the pipeline has no per-camera switch.</summary>
+        public static void SetShadows(Camera cam, bool on) { }
+
+        private static float? savedShadowDistance;
+
+        /// <summary>The shadow distance capped at far while a cut is on; null puts the game's back. QualitySettings here; an SRP may keep its own.</summary>
+        public static void CapShadowDistance(float? far)
+        {
+            if (far is float f)
+            {
+                if (savedShadowDistance == null) savedShadowDistance = QualitySettings.shadowDistance;
+                float want = Mathf.Min(savedShadowDistance.Value, f);
+                if (Mathf.Abs(QualitySettings.shadowDistance - want) > 0.01f) QualitySettings.shadowDistance = want;
+            }
+            else if (savedShadowDistance != null)
+            {
+                QualitySettings.shadowDistance = savedShadowDistance.Value;
+                savedShadowDistance = null;
+            }
+        }
+
+        /// <summary>The eye uses the game camera's renderer; returns its index, or -1 where there's only one.</summary>
+        public static int CopyRenderer(Camera eye, Camera game) => -1;
+
+        public static int RendererIndex(Camera cam) => -1;
+
+        /// <summary>Post-processing on or off for one camera (the Graphics tab's Post-processing).</summary>
+        public static void SetPostProcessing(Camera cam, bool on) { }
+
+        /// <summary>Raise BeforeCamera / AfterCamera for every camera the pipeline renders. Any SRP calls RenderPipelineManager's events (if the pipeline calls BeginCameraRendering).</summary>
+        private static bool TryHook()
+        {
+#if DVR_IL2CPP
+            return false;   // IL2CPP: the mod raises them from its own hook (VrPipeline.RaiseBefore / RaiseAfter)
+#else
+            RenderPipelineManager.beginCameraRendering += (_, cam) => RaiseBefore(cam);
+            RenderPipelineManager.endCameraRendering += (_, cam) => RaiseAfter(cam);
+            return true;
+#endif
+        }
+    }
+}

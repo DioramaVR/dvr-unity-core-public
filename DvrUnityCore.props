@@ -5,7 +5,7 @@
     Import it in the mod's csproj AFTER the PropertyGroup that sets these two:
 
       <DvrRuntime>Mono</DvrRuntime>        Mono (BepInEx 5) or IL2CPP (BepInEx 6)
-      <DvrPipeline>BuiltIn</DvrPipeline>   BuiltIn or URP
+      <DvrPipeline>BuiltIn</DvrPipeline>   BuiltIn, URP, or Custom (the game brings its own VrPipeline)
 
       <Import Project="$(DvrCoreDir)DvrUnityCore.props" />
 
@@ -13,7 +13,13 @@
     core\dvr-unity-core, two folders up from the mod's repo). The mod keeps its own
     references (Unity, BepInEx, TextMeshPro, and for URP the two
     Unity.RenderPipelines runtime DLLs); the core adds only source files and
-    defines DVR_MONO or DVR_IL2CPP, and DVR_BUILTIN or DVR_URP.
+    defines DVR_MONO or DVR_IL2CPP, and DVR_BUILTIN, DVR_URP or DVR_CUSTOM_PIPELINE.
+
+    DvrPipeline Custom, for a game on its own scriptable render pipeline (Rogue
+    Trader's "Waaagh"): the core compiles no Pipeline\BuiltIn or Pipeline\Urp file,
+    and the mod supplies "internal static partial class Dvr.VrPipeline" with the same
+    members. Start from src\Pipeline\Custom\VrPipeline.Custom.cs.template (it hooks
+    any SRP's camera callbacks and does the rest as the built-in pipeline does).
 
     Optional:
       <DvrNoBepInEx>true</DvrNoBepInEx> no BepInEx: the core brings the logging and config types it uses (timberborn)
@@ -33,6 +39,7 @@
     <DefineConstants Condition="'$(DvrRuntime)' == 'IL2CPP'">$(DefineConstants);DVR_IL2CPP</DefineConstants>
     <DefineConstants Condition="'$(DvrPipeline)' == 'BuiltIn'">$(DefineConstants);DVR_BUILTIN</DefineConstants>
     <DefineConstants Condition="'$(DvrPipeline)' == 'URP'">$(DefineConstants);DVR_URP</DefineConstants>
+    <DefineConstants Condition="'$(DvrPipeline)' == 'Custom'">$(DefineConstants);DVR_CUSTOM_PIPELINE</DefineConstants>
     <DefineConstants Condition="'$(DvrEntityId)' == 'true'">$(DefineConstants);DVR_ENTITYID</DefineConstants>
     <DefineConstants Condition="'$(DvrNoBepInEx)' == 'true'">$(DefineConstants);DVR_NO_BEPINEX</DefineConstants>
     <!-- The core's net472 polyfills sit in namespace System (see Compat.Net472.cs); a game whose mscorlib has one too gets a harmless CS0436. -->
@@ -70,8 +77,8 @@
   <Target Name="DvrCoreCheck" BeforeTargets="CoreCompile">
     <Error Condition="'$(DvrRuntime)' != 'Mono' and '$(DvrRuntime)' != 'IL2CPP'"
            Text="dvr-unity-core: set DvrRuntime to Mono or IL2CPP before importing DvrUnityCore.props (got '$(DvrRuntime)')." />
-    <Error Condition="'$(DvrPipeline)' != 'BuiltIn' and '$(DvrPipeline)' != 'URP'"
-           Text="dvr-unity-core: set DvrPipeline to BuiltIn or URP before importing DvrUnityCore.props (got '$(DvrPipeline)')." />
+    <Error Condition="'$(DvrPipeline)' != 'BuiltIn' and '$(DvrPipeline)' != 'URP' and '$(DvrPipeline)' != 'Custom'"
+           Text="dvr-unity-core: set DvrPipeline to BuiltIn, URP or Custom before importing DvrUnityCore.props (got '$(DvrPipeline)')." />
     <Error Condition="'$(DvrCoreVersion)' != '' and '$(DvrCoreVersion)' != '$(DvrCoreActualVersion)'"
            Text="dvr-unity-core: this mod is built for core $(DvrCoreVersion), but the core at $(MSBuildThisFileDirectory) is $(DvrCoreActualVersion). Check out core v$(DvrCoreVersion), or move the mod to $(DvrCoreActualVersion) (test it, then change DvrCoreVersion in its Directory.Build.props)." />
     <Message Importance="high" Condition="'$(DvrCoreVersion)' == ''"

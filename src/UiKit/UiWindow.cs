@@ -66,6 +66,9 @@ sealed class UiWindow
     // Separate mode: the texture this window's roots are drawn into on their own
     // (screen-sized, the roots at their screen place), instead of the shared one.
     public RenderTexture Own;
+    // A piece out in the world or at the laser: the picture its roots are drawn into alone
+    // (VrPopout.UpdatePieces), its copies cropped from it; null: cut from the UI picture.
+    public RenderTexture Out;
     // The rect the window is shown at: Source, or while editing an empty window,
     // a placeholder of its last size so it can still be seen and moved.
     public Rect Shown { get; private set; }

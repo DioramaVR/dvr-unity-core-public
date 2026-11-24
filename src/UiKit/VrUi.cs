@@ -88,6 +88,9 @@ static class VrUi
 
     public static bool IsAvailable(UiMode mode) => offered.Contains(mode);
     public static bool PopoutOffered => popoutOffered;
+    // The layers popped-out windows and pieces are on (0 until found). A UI camera's own renderer is
+    // widened to draw them, so a mod that recognises a UI-only renderer by its layers should allow these.
+    public static int PopoutLayers => VrPopout.LayersMask;
 
     // While true, the core may still widen the URP renderers for Popout (VrPopout.PrepareLayers,
     // retried each frame until the renderers can be read). Set it so it turns false once a level
@@ -104,6 +107,7 @@ static class VrUi
 
     static readonly List<UiWindowDef> defs = new();
     static readonly List<UiWindow> windows = new();
+    internal static IReadOnlyList<UiWindow> AllWindows => windows;   // VrSelfTest
     static readonly List<UiLayout> builtInLayouts = new();
     static List<UiLayout> layouts = new();
     static readonly HashSet<string> excludedNames = new();
@@ -436,6 +440,7 @@ static class VrUi
     {
         host = h;
         if (!pieceRows) { pieceRows = true; VrPieces.AddRows(windows); }
+        Dvr.VrSelfTest.Update(h);
         VrUiLog.Update(h);
         VrWorldUi.Update(h);
         if (popoutOffered) VrPopout.PrepareLayers(h.Log); // once; retried here if the pipeline wasn't ready at Offer
@@ -451,11 +456,15 @@ static class VrUi
     {
         bool arranging = Arranging;
         h.ShowFullPanel(!arranging);
+        // Pieces out in the world or at the laser, in either mode: drawn alone (VrPopout.UpdatePieces),
+        // so the panel and the windows keep what is behind them. Their roots as last measured.
+        bool panelPieces = !arranging && h.UiCamera != null && h.Active && h.CanArrange && Mode == UiMode.Panel;
+        VrPopout.UpdatePieces(h, windows, arranging || panelPieces ? OutOfWindow : null);
         if (!arranging || h.UiCamera == null)
         {
             EndGrab();
             VrPopout.Release(h, windows);
-            if (h.UiCamera != null && h.Active && h.CanArrange && Mode == UiMode.Panel) UpdatePanelPieces(h);
+            if (panelPieces) UpdatePanelPieces(h);
             else foreach (var w in windows) w.Hide();
             return;
         }
@@ -507,9 +516,18 @@ static class VrUi
         }
     }
 
+    // A sparse piece shown in the world or at the laser this frame (as UpdateWindows and
+    // UpdatePanelPieces decide), not in its window. A held window stays in its window.
+    static bool OutOfWindow(UiWindow w)
+    {
+        if (!w.Def.Sparse || grab?.Window == w) return false;
+        var place = VrPieces.PlaceOf(w.Def);
+        return place is VrPieces.Place.AtLaser or VrPieces.Place.World;
+    }
+
     // Panel mode: the panel shows everything, except World / Mouse pieces set to
-    // the world or the laser, which go there and are cut out of the panel
-    // (VrPieces.PanelCuts, applied by ScreenUiPanel).
+    // the world or the laser, which go there: drawn alone (VrPopout.UpdatePieces), or
+    // where that can't be, cut out of the panel (VrPieces.PanelCuts, applied by ScreenUiPanel).
     static void UpdatePanelPieces(IVrUiHost h)
     {
         if (Time.unscaledTime >= nextBounds)

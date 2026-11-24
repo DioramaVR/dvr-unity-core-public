@@ -115,6 +115,12 @@ namespace Dvr
             // has a headset. So Init runs only once SteamVR has one: with -dvr-vr (a
             // VR launch option) SteamVrStarter asks Steam to start SteamVR off the
             // main thread first. A failed start isn't retried. See VrStart.
+            // The self-test (-dvr-selftest): the simulated session, whatever SteamVR is doing.
+            if (VrSelfTest.Requested)
+            {
+                VrCore.Info("[selftest] " + VrSelfTest.Arg + ": simulated VR, no headset");
+                return StartSimulated(1600, 1600, allowThreaded);
+            }
             SteamVrStarter.Drain();
             var decision = VrStart.Decide(Environment.GetCommandLineArgs(), Environment.GetEnvironmentVariable,
                 SteamVrRunning(), CompositorRunning(), LaunchSteamVr, launchFailed, SteamVrStarter.Current);
@@ -361,6 +367,7 @@ namespace Dvr
         private static readonly PendingFrame[] Pending = new PendingFrame[4];
         private static int nextSlot;
         private static VrSession current;
+        internal static VrSession Current => current;   // VrSelfTest
         public static int RenderThreadCallbacks;
         private readonly TrackedDevicePose_t[] renderThreadPoses = new TrackedDevicePose_t[OpenVR.k_unMaxTrackedDeviceCount];
 

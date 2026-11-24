@@ -35,6 +35,7 @@ static partial class VrUiMenu
 
     static Camera cam;
     static RenderTexture texture;
+    internal static RenderTexture Texture => texture;   // VrSelfTest
     static Canvas canvas;
     static Transform content;
     static GameObject quad;

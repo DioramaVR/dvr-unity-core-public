@@ -157,7 +157,11 @@ world, Hidden or Auto, kept in `[VrUi] PiecePlace <id>`.
 Used by: ats and cataclismo (pieces); tph and tpm (windows only).
 
 **Limits today:**
-- Pieces are crops of one screen-sized texture, so overlapping UI shows
+- Pieces out in the world or at the laser are drawn alone where Popout is on
+  (`VrPopout.UpdatePieces`, every UI mode, Panel too): the panel keeps what is
+  behind them, and their copies carry nothing from behind. Elsewhere (Popout
+  not offered, Cutout chosen, no spare layers, a piece's first frame out) they
+  are crops of the one UI texture, cut from the panel, so overlapping UI shows
   through them.
 - World and laser pieces show at most 24 elements each.
 - Elements are a root's direct children.
@@ -221,6 +225,10 @@ Used by: deathsdoor.
     UI camera renders.
   - The game sees no change, and switching to Cutout or Panel undoes it all.
     Roots that are themselves a root canvas are left alone.
+  - Pieces shown in the world or at the laser pop out the same way, in every
+    mode (Panel too), on their own spare layers (the last one or two, never a
+    window's), into the pieces' picture: one more UI camera render while any
+    piece is out. Back in its window or hidden, a piece is put back.
 - **URP renderers filter layers themselves** (found in TPM). A URP renderer
   draws only the layers in its opaque / transparent masks, so spare layers it
   leaves out give empty windows, with no error.
@@ -228,6 +236,17 @@ Used by: deathsdoor.
     layer, **once, at load (main menu)**, through `VrPipeline.WidenRendererLayers`.
   - Never per mode: changing the masks makes URP rebuild the renderer, and TPM's
     museum then drew black until the level was reloaded.
+  - The spare layers come from the renderer the UI camera actually uses. When
+    that is not the asset's default renderer (a UI-only renderer such as
+    cataclismo's GameUI, added or switched per scene or per URP asset after
+    start-up), it is widened when the layers are looked for; it draws no lit
+    world, so that is safe at any time. The default renderer is still only
+    widened at start-up. When the UI camera's renderer or the URP asset changes,
+    everything popped out is put back and taken again on the new layers.
+  - Spare layers are unnamed layers 8 and up. A game that has named all of those
+    (Cataclismo) gets the unnamed built-in slots 7, 6 and 3 instead. A renderer
+    widened for them no longer draws only the UI layer: a mod that recognises a
+    UI-only renderer by its masks should allow `VrUi.PopoutLayers`.
   - The log line `[vrui] popout: N spare layers …; renderer '…' layers 0x… / 0x…`
     shows what was used.
 - **A mod that moves nested canvases onto their root's layer will undo Popout.**

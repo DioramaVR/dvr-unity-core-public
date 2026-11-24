@@ -33,6 +33,12 @@ namespace Dvr
         static string pending, pendingEyePath;
         static bool pendingLight;
 
+        /// <summary>The left eye of the last requested shot (VrSelfTest reads it for its checks).</summary>
+        internal static RenderTexture LastLeft;
+
+        /// <summary>Drops a request nothing answered (VrSelfTest, when the mod never saves an eye).</summary>
+        internal static void Cancel() => pending = null;
+
         /// <summary>A shot is waiting for the next <see cref="CaptureIfRequested"/>.</summary>
         public static bool Busy => pending != null;
 
@@ -64,6 +70,7 @@ namespace Dvr
             if (pending == null) return;
             var name = pending;
             pending = null;
+            LastLeft = left;
             if (Dir == null) { VrCore.Error($"[sim] screenshot {name}: SimShots.Dir isn't set"); return; }
             try
             {

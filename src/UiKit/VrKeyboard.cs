@@ -26,8 +26,9 @@ interface ITextFields
 }
 
 // Text entry in VR, the same in every game: when a text field gets focus,
-// SteamVR's own keyboard opens with the field's text; what's typed is copied
-// into the field as it changes (cursor at the end), Done enters it and leaves
+// SteamVR's own keyboard opens with the field's text; each key is applied to
+// the field as it comes (KeyboardKeys: SteamVR's text may hold only the newest
+// key), cursor at the end; Done enters it and leaves
 // the field, and focus going elsewhere closes the keyboard. Once per focus:
 // closed by the player, it stays closed until they click into a field again.
 // Call Update every frame (after VrSession.BeginFrame); this reads SteamVR's
@@ -40,6 +41,8 @@ static class VrKeyboard
     static object field, lastOpened;
     static bool open;
     static readonly StringBuilder buffer = new(1024);
+    static readonly KeyboardKeys keys = new();
+    static int keyLogs;
 
     public static bool Open => open;
 
@@ -66,6 +69,7 @@ static class VrKeyboard
                 (int)EGamepadTextInputLineMode.k_EGamepadTextInputLineModeSingleLine,
                 0, "", (uint)(max > 0 ? max : 256), Fields.Get(field) ?? "", 0);
             open = err == EVROverlayError.None;
+            keys.Reset();
             VrCore.Info($"[keyboard] field '{Fields.Name(field)}' focused; SteamVR keyboard {(open ? "opened" : $"failed: {err}")}");
         }
         if (focused == null) lastOpened = null;
@@ -79,12 +83,28 @@ static class VrKeyboard
             switch ((EVREventType)ev.eventType)
             {
                 case EVREventType.VREvent_KeyboardCharInput:
-                    if (open && field != null) Fields.Set(field, KeyboardText(overlay));
+                    if (open && field != null)
+                    {
+                        var k = ev.data.keyboard;
+                        string key = KeyboardKeys.Input(new[] { k.cNewInput0, k.cNewInput1, k.cNewInput2, k.cNewInput3, k.cNewInput4, k.cNewInput5, k.cNewInput6, k.cNewInput7 });
+                        string text = KeyboardText(overlay), before = Fields.Get(field) ?? "";
+                        bool? was = keys.NewestOnly;
+                        string after = keys.Next(before, key, text, Fields.MaxLength(field));
+                        if (keyLogs < 12 || keys.NewestOnly != was)
+                        {
+                            keyLogs++;
+                            VrCore.Info($"[keyboard] key {(key.Length > 0 ? "input " + Describe(key) : "(none in the event)")}, SteamVR text {Describe(text)}" +
+                                $"{(keys.NewestOnly == true ? " (newest key only)" : keys.NewestOnly == false ? " (whole text)" : "")}: {Describe(before)} -> {Describe(after)}");
+                        }
+                        Fields.Set(field, after);
+                    }
                     break;
                 case EVREventType.VREvent_KeyboardDone:
                     if (open && field != null)
                     {
-                        Fields.Set(field, KeyboardText(overlay));
+                        // The text the keys built stands: SteamVR's may hold only the newest key.
+                        string text = KeyboardText(overlay), kept = Fields.Get(field) ?? "";
+                        if (text != kept) VrCore.Info($"[keyboard] done: SteamVR's text {Describe(text)}, kept the field's {Describe(kept)}");
                         Fields.Submit(field);
                         VrCore.Info($"[keyboard] entered '{Fields.Get(field)}'");
                     }
@@ -97,6 +117,8 @@ static class VrKeyboard
             }
         }
     }
+
+    static string Describe(string s) => s == "\b" ? "backspace" : s.Length == 1 && s[0] < ' ' ? $"0x{(int)s[0]:X2}" : $"'{s}'";
 
     static string KeyboardText(CVROverlay overlay)
     {
@@ -130,7 +152,19 @@ sealed class TmpTextFields : ITextFields
         field.caretPosition = end;
         field.selectionAnchorPosition = end;
         field.selectionFocusPosition = end;
+        // Shown now, not only after Done (Cataclismo, 2026-11-23: the text was right but the
+        // box showed it only once the keyboard closed): the label and its mesh rebuilt.
+        try
+        {
+            field.ForceLabelUpdate();
+            if (field.textComponent != null) field.textComponent.ForceMeshUpdate(false, false);
+        }
+        catch (System.Exception e)
+        {
+            if (!refreshFailed) { refreshFailed = true; VrCore.Info($"[keyboard] couldn't refresh the field's label: {e.Message}"); }
+        }
     }
+    static bool refreshFailed;
 
     public void Submit(object f)
     {

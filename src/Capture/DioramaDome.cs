@@ -103,6 +103,19 @@ namespace Dvr
         /// the poses, radius) is what SplatFade fades by.
         /// </summary>
         public static string Transforms(IReadOnlyList<View> views, int size, string game, Vector3 centre, float radius)
+            => Transforms(views, size, game, centre, radius, null);
+
+        /// <summary>The camera's near and far planes and the depth pictures' size (CaptureDepth), for the "dvr" block.</summary>
+        public sealed class DepthInfo { public int Size; public float Near, Far; }
+
+        /// <summary>
+        /// As above, with each view's depth (<paramref name="depth"/> not null): "dvr.depth" says
+        /// where the depth files are (depth/vNNN.f32, the frame's number), their size and
+        /// format, and the camera's near and far planes. The projection is the pinhole one
+        /// above (fl_x, cx, cy), scaled to the depth size. Not nerfstudio's depth_file_path,
+        /// which expects pictures, so training tools don't try to read ours.
+        /// </summary>
+        public static string Transforms(IReadOnlyList<View> views, int size, string game, Vector3 centre, float radius, DepthInfo depth)
         {
             float focal = Focal(size);
             var c = Mirror(centre);
@@ -110,7 +123,11 @@ namespace Dvr
                 .Append("{\n  \"camera_model\": \"OPENCV\",\n")
                 .Append($"  \"fl_x\": {F(focal)}, \"fl_y\": {F(focal)}, \"cx\": {F(size / 2f)}, \"cy\": {F(size / 2f)}, \"w\": {size}, \"h\": {size},\n")
                 .Append("  \"k1\": 0, \"k2\": 0, \"p1\": 0, \"p2\": 0,\n")
-                .Append($"  \"dvr\": {{\"game\": \"{Escape(game)}\", \"centre\": [{F(c.x)},{F(c.y)},{F(c.z)}], \"radius\": {F(radius)}}},\n")
+                .Append($"  \"dvr\": {{\"game\": \"{Escape(game)}\", \"centre\": [{F(c.x)},{F(c.y)},{F(c.z)}], \"radius\": {F(radius)}")
+                .Append(depth == null ? "" : $", \"fov_y\": {F(FieldOfView)}, \"near\": {F(depth.Near)}, \"far\": {F(depth.Far)}, " +
+                    $"\"depth\": {{\"path\": \"depth/v{{n:000}}.f32\", \"w\": {depth.Size}, \"h\": {depth.Size}, " +
+                    "\"format\": \"float32 little-endian, linear eye depth in world units along the view axis, row 0 = bottom of the picture, 0 = nothing\"}")
+                .Append("},\n")
                 .Append("  \"frames\": [\n");
             for (int n = 0; n < views.Count; n++)
             {

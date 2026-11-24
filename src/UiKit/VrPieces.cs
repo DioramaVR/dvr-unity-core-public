@@ -170,12 +170,13 @@ static class VrPieces
         var centre = end + new NVec(0, bounds.height * 0.5f * mpp + 0.02f, 0);
         var facing = HandDrag.FacingHead(h, centre);
         int n = Math.Min(w.Parts.Count, 24);
+        var src = From(w, tex);
         for (int i = 0; i < n; i++)
         {
             var r = w.Parts[i];
             var local = new NVec((r.center.x - bounds.center.x) * mpp, (r.center.y - bounds.center.y) * mpp, 0);
-            w.ShowPart(h, tex, i, r, facing.Compose(new Pose(local, NQuat.Identity)), mpp);
-            building.Add(r);
+            w.ShowPart(h, src, i, r, facing.Compose(new Pose(local, NQuat.Identity)), mpp);
+            if (w.Out == null) building.Add(r);
         }
         w.HideParts(n);
         return true;
@@ -206,13 +207,18 @@ static class VrPieces
                 // A little toward the viewer, so the thing it belongs to doesn't cut into it.
                 var toHead = h.Head.Position - at;
                 if (toHead.LengthSquared() > 1e-6f) at += NVec.Normalize(toHead) * Math.Min(0.03f, toHead.Length() * 0.5f);
-                w.ShowPart(h, tex, n++, r, HandDrag.FacingHead(h, at), MetresPerPixel(h, at));
-                building.Add(r);
+                w.ShowPart(h, From(w, tex), n++, r, HandDrag.FacingHead(h, at), MetresPerPixel(h, at));
+                if (w.Out == null) building.Add(r);
             }
         }
         w.HideParts(n);
         return true;
     }
+
+    // Where a piece's copies are cropped from: its own picture (VrPopout.UpdatePieces: only the
+    // piece, and the panel keeps what is behind it), or, without one, the UI picture, the piece's
+    // rects then cut from the panel and the windows (PanelCuts) so it isn't shown twice.
+    static RenderTexture From(UiWindow w, RenderTexture tex) => w.Out != null ? w.Out : tex;
 
     // A piece's elements: its roots' active children, or the root itself when it draws alone.
     static IEnumerable<Transform> Elements(Transform root)

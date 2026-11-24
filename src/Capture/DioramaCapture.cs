@@ -48,7 +48,7 @@ namespace Dvr
         public static bool Offered => offered;
         static bool offered;
         static string game = "Game", prefix = "game";
-        static ConfigEntry<int> resolution, perFrame;
+        static ConfigEntry<int> resolution, perFrame, depthResolution;
         static ConfigEntry<bool> showRing;
 
         /// <summary>The folder captures go in: Pictures\Diorama VR\Dioramas.</summary>
@@ -63,6 +63,7 @@ namespace Dvr
             offered = true;
             resolution = config.Bind("Diorama", "Resolution", 1024, "Size (pixels, square) of each captured view.");
             perFrame = config.Bind("Diorama", "ViewsPerFrame", 4, "Views rendered each frame while capturing: more is quicker, fewer keeps the headset smoother.");
+            depthResolution = config.Bind("Diorama", "DepthResolution", 512, "Size (pixels, square) of each view's depth picture, for the point cloud (depth/vNNN.f32). 0: no depth.");
             showRing = config.Bind("Diorama", "ShowRing", false, "Show the region a diorama capture takes, as a ring on the ground.");
             VrUiKit.VrSettings.Add(new VrUiKit.ActionSetting("Recording", "Capture diorama", Text, Start));
             VrUiKit.VrSettings.Add(new VrUiKit.ToggleSetting("Recording", "Show diorama ring", showRing));
@@ -134,8 +135,73 @@ namespace Dvr
 
         static Action restore;
         static bool frozen;
-        static GameObject cameraObject;
-        static RenderTexture target;
+        static Slot[] slots;
+
+        // One view at a time: a colour camera and, for depth, a camera beside it rendering into a
+        // depth-only target. Both copy the game camera and the eye's pipeline settings, are enabled
+        // only for the frame they render, and differ only in their target.
+        internal sealed class Slot : IDisposable
+        {
+            public readonly Camera Cam, DepthCam;
+            public readonly RenderTexture Colour;
+            public readonly CaptureDepth Depth;
+            public int View = -1;
+
+            public Slot(int i, int size, int depthSize, Camera main, Camera eye, int mask, float radius)
+            {
+                Colour = new RenderTexture(size, size, 24, RenderTextureFormat.ARGB32, RenderTextureReadWrite.sRGB) { antiAliasing = 4 };
+                Colour.Create();
+                Cam = Make($"{VrCore.Name} Diorama Capture {i}", main, eye, mask, radius, Colour);
+                if (depthSize > 0)
+                {
+                    Depth = new CaptureDepth(depthSize);
+                    DepthCam = Make($"{VrCore.Name} Diorama Depth {i}", main, eye, mask, radius, Depth.Target);
+                }
+            }
+
+            static Camera Make(string name, Camera main, Camera eye, int mask, float radius, RenderTexture target)
+            {
+                var go = new GameObject(name);
+                var cam = go.AddComponent<Camera>();
+                cam.enabled = false;
+                cam.CopyFrom(main);
+                cam.stereoTargetEye = StereoTargetEyeMask.None;
+                cam.ResetProjectionMatrix();
+                cam.targetTexture = target;
+                cam.fieldOfView = DioramaDome.FieldOfView;
+                cam.aspect = 1;
+                cam.cullingMask = mask;   // the game's world only: not the UI layer, nor anything of ours
+                cam.nearClipPlane = 0.05f * radius;
+                cam.farClipPlane = 60f * radius;
+                cam.depth = -100;         // before the eyes; it has its own target anyway
+                if (eye != null) VrPipeline.CopySpectatorSettings(cam, eye);
+                cam.enabled = false;
+                return cam;
+            }
+
+            public void Pose(Vector3 position, Quaternion rotation, Action<Camera> prepare)
+            {
+                Cam.transform.SetPositionAndRotation(position, rotation);
+                prepare?.Invoke(Cam);
+                if (DepthCam == null) return;
+                DepthCam.transform.SetPositionAndRotation(position, rotation);
+                prepare?.Invoke(DepthCam);
+            }
+
+            public void Show(bool on)
+            {
+                if (Cam.enabled != on) Cam.enabled = on;
+                if (DepthCam != null && DepthCam.enabled != on) DepthCam.enabled = on;
+            }
+
+            public void Dispose()
+            {
+                if (Cam != null) UnityEngine.Object.Destroy(Cam.gameObject);
+                if (DepthCam != null) UnityEngine.Object.Destroy(DepthCam.gameObject);
+                Colour.Release(); UnityEngine.Object.Destroy(Colour);
+                Depth?.Dispose();
+            }
+        }
 
         static IEnumerator<bool> Run(TableRig rig, Camera main, Camera eye, int worldMask, Vector3 centre, float radius)
         {
@@ -151,42 +217,47 @@ namespace Dvr
             var dir = Path.Combine(Folder, name);
             Directory.CreateDirectory(Path.Combine(dir, "images"));
 
-            target = new RenderTexture(size, size, 24, RenderTextureFormat.ARGB32, RenderTextureReadWrite.sRGB) { antiAliasing = 4 };
-            target.Create();
-            cameraObject = new GameObject(VrCore.Name + " Diorama Capture");
-            var cam = cameraObject.AddComponent<Camera>();
-            cam.CopyFrom(main);
-            cam.stereoTargetEye = StereoTargetEyeMask.None;
-            cam.ResetProjectionMatrix();
-            cam.targetTexture = target;
-            cam.fieldOfView = DioramaDome.FieldOfView;
-            cam.aspect = 1;
-            // The game's world only: not the UI layer, nor anything of ours (the VR layer, popped-out windows' layers).
+            // The views render like the VR eyes: enabled cameras that Unity draws in its own loop,
+            // at the end of the frame, after the game has queued its draws (Cataclismo's trees are
+            // instanced draws a hand-rendered camera never saw). Each frame poses a few slots
+            // (a colour camera, and a depth camera beside it), and the next frame reads them back.
             bool separate = OurVisuals.VisualLayerSeparate;
-            cam.cullingMask = CaptureMask(worldMask, VrCore.VisualLayer, separate, VrUiKit.VrPopout.LayersMask);
+            int mask = CaptureMask(worldMask, VrCore.VisualLayer, separate, VrUiKit.VrPopout.LayersMask);
             if (!separate) showRenderers = OurVisuals.HideRenderers();   // our layer is the game's too (Cataclismo's Default): not by mask
-            cam.nearClipPlane = 0.05f * radius;
-            cam.farClipPlane = 60f * radius;
-            cam.enabled = false;
-            if (eye != null) VrPipeline.CopySpectatorSettings(cam, eye);
+            int depthSize = depthResolution == null ? 0 : Mathf.Clamp(depthResolution.Value, 0, 4096);
+            int step = Mathf.Clamp(perFrame.Value, 1, 8);
+            slots = new Slot[step];
+            for (int i = 0; i < step; i++) slots[i] = new Slot(i, size, depthSize, main, eye, mask, radius);
 
             var views = DioramaDome.Views(centre, radius);
-            VrCore.Info($"[diorama] capturing {views.Count} views of radius {radius:F2} round {centre} into {dir}");
-            int step = Mathf.Clamp(perFrame.Value, 1, 32);
-            for (int n = 0; n < views.Count; n++)
+            VrCore.Info($"[diorama] capturing {views.Count} views of radius {radius:F2} round {centre} into {dir} ({step} a frame, in Unity's camera loop)");
+            int next = 0;
+            while (true)
             {
-                var v = views[n];
-                cam.transform.SetPositionAndRotation(v.Position, Quaternion.LookRotation(v.Forward, v.Up));
-                if (PrepareCamera != null) PrepareCamera(cam); else rig.PrepareEye?.Invoke(cam);
-                cam.Render();
-                TexturePng.Save(target, Path.Combine(dir, DioramaDome.ImagePath(n).Replace('/', Path.DirectorySeparatorChar)), alpha: false, keep: true);
-                if ((n + 1) % step == 0)
+                // What Unity rendered at the end of the last frame.
+                foreach (var slot in slots)
                 {
-                    status = $"Capturing {n + 1}/{views.Count}";
-                    yield return true;
+                    if (slot.View < 0) continue;
+                    TexturePng.Save(slot.Colour, Path.Combine(dir, DioramaDome.ImagePath(slot.View).Replace('/', Path.DirectorySeparatorChar)), alpha: false, keep: true);
+                    slot.Depth?.Read(slot.DepthCam, Path.Combine(dir, CaptureDepth.PathOf(slot.View).Replace('/', Path.DirectorySeparatorChar)));
+                    slot.View = -1;
                 }
+                if (next >= views.Count) break;
+                foreach (var slot in slots)
+                {
+                    if (next >= views.Count) { slot.Show(false); continue; }
+                    var v = views[next];
+                    slot.Pose(v.Position, Quaternion.LookRotation(v.Forward, v.Up), PrepareCamera ?? rig.PrepareEye);
+                    slot.View = next++;
+                    slot.Show(true);
+                }
+                status = $"Capturing {next}/{views.Count}";
+                yield return true;   // Unity renders the slots' cameras at the end of this frame
             }
-            File.WriteAllText(Path.Combine(dir, "transforms.json"), DioramaDome.Transforms(views, size, game, centre, radius));
+            foreach (var slot in slots) slot.Show(false);
+            float near = slots[0].Cam.nearClipPlane, far = slots[0].Cam.farClipPlane;
+            var info = depthSize <= 0 ? null : new DioramaDome.DepthInfo { Size = depthSize, Near = near, Far = far };
+            File.WriteAllText(Path.Combine(dir, "transforms.json"), DioramaDome.Transforms(views, size, game, centre, radius, info));
             Cleanup();
             status = "Saved " + name;
             VrCore.Info($"[diorama] saved {views.Count} views to {dir}");
@@ -200,10 +271,8 @@ namespace Dvr
 
         static void Cleanup()
         {
-            if (cameraObject != null) UnityEngine.Object.Destroy(cameraObject);
-            cameraObject = null;
-            if (target != null) { target.Release(); UnityEngine.Object.Destroy(target); }
-            target = null;
+            if (slots != null) foreach (var slot in slots) slot.Dispose();
+            slots = null;
             TexturePng.Release();
             showRenderers?.Invoke();
             showRenderers = null;

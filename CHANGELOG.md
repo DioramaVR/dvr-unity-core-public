@@ -9,7 +9,57 @@ Each mod says which version it's built and tested with (`DvrCoreVersion` in its
 version, and the installer builds each mod against the core tag it names. See
 README.md, "Versions".
 
-## 0.1.3 (release branch `release/0.1.3`, not tagged yet)
+## 0.1.4
+
+- **The self-test** (`-dvr-selftest`, `VrSelfTest`, docs/SELF-TEST.md): the game
+  runs in simulated VR, tests the main menu and (with the mod's `EnterLevel`
+  hook) a level: eye, UI picture, panel cut, each popped-out window and piece,
+  the VR menu, a keyboard round-trip, the renderers and layers, log errors.
+  Writes report.json and report.html with the pictures in
+  Pictures\Diorama VR\SelfTest and quits. Plus `tools/buildid-check.js`: the
+  games Steam has updated since their mod was tested.
+- **Fix: SteamVR's keyboard typed only the last letter** (every game; found in
+  Cataclismo). The current SteamVR sends each key with an empty `cNewInput` and
+  keeps only the newest key in `GetKeyboardText`, so copying that text into the
+  field replaced it with one letter per key. `VrKeyboard` now builds the text
+  key by key (`KeyboardKeys`): the event's own input when it has one, else
+  SteamVR's text read as the whole text or as the newest key (remembered per
+  field), with an empty text as backspace. Done keeps the text the keys built.
+  TextMesh Pro fields also redraw after each key (`ForceLabelUpdate`, mesh
+  rebuild), as they showed the text only after Done; that part is not yet
+  tested in a game.
+- **Fix: Popout found no layer in a game that names every layer from 8 up**
+  (Cataclismo: only 3 and 6 unnamed), so windows and pieces stayed cut. It now
+  falls back to the unnamed built-in slots 7, 6 and 3. The widening of the UI
+  camera's own renderer is logged either way, and the spare-layer line only
+  when it changes. New `VrUi.PopoutLayers`: the layers in use, for a mod that
+  recognises its UI-only renderer by its layers.
+- **UI pieces out in the world or at the laser pop out like windows**, in every
+  UI mode, Panel too (`VrPopout.UpdatePieces`): their roots are drawn alone
+  into their own picture, so the panel and the windows keep whatever is behind
+  a piece (no hole), and the piece's copy carries nothing from behind it
+  (Cataclismo's wave pointers over the build bar). The cut-out stays only as
+  the fallback (Popout not offered or Cutout chosen, no spare layers, a piece's
+  first frame out). Costs one more UI camera render while a piece is out.
+- **Popout's spare layers come from the renderer the UI camera uses**, which is
+  widened then if it isn't the default renderer (Cataclismo's GameUI renderer,
+  switched per scene, drew only the UI layer, so popped-out pictures came out
+  empty). Looked for again when the UI camera's renderer or URP asset changes.
+
+- **Fix: diorama views missed what a game draws per frame** (Cataclismo's trees:
+  instanced draws queued in Update). The views now render like the VR eyes:
+  enabled cameras that Unity draws in its own loop at the end of the frame (a
+  colour and a depth camera per slot, ViewsPerFrame slots), read back the next
+  frame, instead of cam.Render() by hand inside Update.
+
+- **Diorama capture saves depth** (`CaptureDepth`). Every view is also
+  rendered into a depth-only target and saved as `depth/vNNN.f32` (linear eye
+  depth, world units, float32; `[Diorama] DepthResolution`, 512, 0 = off), with
+  near, far and fov in `transforms.json`'s `dvr` block. tools/dvr-dioramas turns
+  colour + depth into an exact point cloud. Works on built-in and URP
+  (Unity-tested both).
+
+## 0.1.3 (tagged `v0.1.3`, 2026-11-23)
 
 Nothing a mod has to change in code; a rebuild picks everything up. A mod
 with its own eye cameras can use `Recorder.WithoutOurs` for clean photos.

@@ -14,6 +14,11 @@ namespace Dvr
 
         public static bool WidenRendererLayers(int layers, out string info) { info = "built-in pipeline: nothing to widen"; return true; }
 
+        // No per-camera renderer (VrPopout: the UI camera's own renderer under URP).
+        public static int? CameraRendererLayers(Camera cam, out string info) { info = "built-in pipeline: no renderer layer filter"; return ~0; }
+        public static bool WidenCameraRenderer(Camera cam, int layers, out string info) { info = "built-in pipeline: nothing to widen"; return true; }
+        public static long RendererKey(Camera cam) => 0;
+
         /// <summary>For VrRecon: the camera's pipeline settings.</summary>
         public static string DescribeCamera(Camera c) => $"path {c.renderingPath} actual {c.actualRenderingPath} hdr {c.allowHDR}";
 

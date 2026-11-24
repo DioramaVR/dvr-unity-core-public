@@ -230,6 +230,100 @@ namespace Dvr
             return allRead;
         }
 
+        // ---- the renderer one camera uses ----
+        //
+        // A game can give its UI camera a renderer of its own, and switch it per
+        // scene or per URP asset (cataclismo-vr's GameUI renderer, which draws the UI
+        // layer only, 2026-11-23). Popout must look at the renderer actually in use,
+        // and that renderer may not exist yet when PrepareLayers runs.
+
+        /// <summary>
+        /// The masks of the renderer <paramref name="cam"/> renders with (its own renderer,
+        /// or the asset's default); every layer (~0) with no URP pipeline; null when that
+        /// renderer can't be found or read (the caller falls back to <see cref="RendererLayers"/>).
+        /// </summary>
+        public static int? CameraRendererLayers(Camera cam, out string info)
+        {
+            if (UniversalRenderPipeline.asset == null) { info = "no URP pipeline active"; return ~0; }
+            var data = CameraRendererData(cam, out _, out info);
+            if (data == null) return null;
+            var om = GetMask(data, "opaqueLayerMask"); var tm = GetMask(data, "transparentLayerMask");
+            if (om == null || tm == null) { info = $"renderer '{data.name}' masks not readable yet"; return null; }
+            info = $"UI camera's renderer '{data.name}' 0x{om.Value:X} / 0x{tm.Value:X}";
+            return om.Value & tm.Value;
+        }
+
+        /// <summary>
+        /// Adds layers to the renderer <paramref name="cam"/> uses, if it is not the asset's
+        /// default renderer (a UI camera's own renderer draws no lit world, so URP rebuilding
+        /// it is harmless at any time; the default one is widened once, early, by PrepareLayers).
+        /// </summary>
+        public static bool WidenCameraRenderer(Camera cam, int layers, out string info)
+        {
+            var data = CameraRendererData(cam, out bool isDefault, out info);
+            if (data == null) return false;
+            if (isDefault) { info = $"'{data.name}' is the default renderer: left to start-up"; return false; }
+            var om = GetMask(data, "opaqueLayerMask"); var tm = GetMask(data, "transparentLayerMask");
+            if (om == null || tm == null) { info = $"'{data.name}' masks not readable yet"; return false; }
+            if ((om.Value & layers) == layers && (tm.Value & layers) == layers) { info = $"'{data.name}' already draws them"; return true; }
+            SetMask(data, "opaqueLayerMask", om.Value | layers);
+            SetMask(data, "transparentLayerMask", tm.Value | layers);
+            info = $"'{data.name}' 0x{om.Value:X} / 0x{tm.Value:X} -> 0x{om.Value | layers:X} / 0x{tm.Value | layers:X}";
+            return true;
+        }
+
+        /// <summary>Which renderer <paramref name="cam"/> uses, in which asset: changes when the game switches either.</summary>
+        public static long RendererKey(Camera cam)
+        {
+            var asset = UniversalRenderPipeline.asset;
+            if (asset == null || cam == null) return 0;
+            return VrCore.Key(asset) * 1024 + RendererIndex(cam, asset) + 1;
+        }
+
+        private static ScriptableRendererData CameraRendererData(Camera cam, out bool isDefault, out string info)
+        {
+            isDefault = true;
+            var asset = UniversalRenderPipeline.asset;
+            var all = RendererData(out info);
+            if (asset == null || cam == null || all == null) return null;
+            int i = RendererIndex(cam, asset), def = DefaultIndex(asset);
+            if (i < 0) i = def;
+            if (i < 0 || i >= all.Count) { info = $"renderer {i} of {all.Count} not found"; return null; }
+            isDefault = i == def;
+            return all[i];
+        }
+
+        // The camera's renderer index (-1: the asset's default), or -1 when it can't be read.
+        private static int RendererIndex(Camera cam, UniversalRenderPipelineAsset asset)
+        {
+            try
+            {
+                var d = cam.GetComponent<UniversalAdditionalCameraData>();
+                if (d == null) return -1;
+#if DVR_IL2CPP
+                return d.m_RendererIndex;
+#else
+                var f = typeof(UniversalAdditionalCameraData).GetField("m_RendererIndex", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                return f != null ? (int)f.GetValue(d) : -1;
+#endif
+            }
+            catch { return -1; }
+        }
+
+        private static int DefaultIndex(UniversalRenderPipelineAsset asset)
+        {
+            try
+            {
+#if DVR_IL2CPP
+                return asset.m_DefaultRendererIndex;
+#else
+                var f = typeof(UniversalRenderPipelineAsset).GetField("m_DefaultRendererIndex", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                return f != null ? (int)f.GetValue(asset) : 0;
+#endif
+            }
+            catch { return 0; }
+        }
+
         private static List<ScriptableRendererData> RendererData(out string info)
         {
             info = null;
